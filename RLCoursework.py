@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import random
+from collections import deque
 
 # Register Atari environments
 gym.register_envs(ale_py)
@@ -12,7 +13,7 @@ gym.register_envs(ale_py)
 # Create environment
 env = gym.make(
     "ALE/MsPacman-v5",
-    render_mode="human", #change to 'human' to see render
+    render_mode=None, # 'human' or None for no rendering
     obs_type="grayscale"
 )
 
@@ -63,23 +64,32 @@ class DQN(nn.Module):
 
 
 class Agent:
-    def __init__(self, nn):
-        self.action_nn = DQN(obs.size, env.action_space.n).to(device)
-        self.target_nn = DQN(obs.size, env.action_space.n).to(device)
+    def __init__(self, epsilon,gamma, C, memory_minibatch_size):
+        self.action_nn = DQN(env.action_space.n).to(device)
+        self.target_nn = DQN(env.action_space.n).to(device)
         self.target_nn.load_state_dict(self.action_nn.state_dict())
-        self.gamma = 0.9 #discount factor
-        self.replay_memory = []
-        self.C = 4
-        self.memory_minibatch_size = 8
-        
+        self.gamma = gamma #discount factor
+        self.epsilon = epsilon 
+        self.replay_memory = deque(maxlen=100000)
+        self.C = C
+        self.memory_minibatch_size = memory_minibatch_size
+
+    def add_to_replay_memory(self, transition): # Can be made to remove lower TD error transitions if memory is full
+        if len(self.replay_memory) >= self.replay_memory.maxlen:
+            self.replay_memory.popleft()  # Remove the oldest transition
+        self.replay_memory.appendleft(transition)
 
     def select_action(self, nn, observation):
-        # Convert observation to tensor
         obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-        # Get action from the neural network
+        # Get action values (vector) from the neural network
         action_tensor = nn(obs_tensor)
-        value  = max(action_tensor)
-        action = torch.argmax(action_tensor).item()
+        if random.random() < self.epsilon: #Epsilon Greedy Exploration
+            value  = max(action_tensor)
+            action = torch.argmax(action_tensor).item()
+        else:
+            action = random.randint(0, env.action_space.n - 1)
+            value  = action_tensor[0][action].item()
+        
         return (action, value) 
 
     
@@ -96,34 +106,30 @@ class Agent:
         # 2. Separate transitions into individual components
         states, actions, rewards, next_states, terminated, truncated = zip(*batch)
 
-        # 3. Convert observations into batched tensors
+        # Convert States and Next states into batch tensors, unsqueeze to add channel dimension 
         states = torch.stack([
             torch.as_tensor(s) for s in states
         ]).unsqueeze(1).float().to(device) / 255.0
 
         next_states = torch.stack([
             torch.as_tensor(s) for s in next_states
-        ]).unsqueeze(1).float().to(device) / 255.0
+        ]).unsqueeze(1).float().to(device) / 255.0 # Normalise pixel values to [0, 1]  
 
         # Convert remaining components into tensors
-        actions = torch.tensor(
-            actions, dtype=torch.long, device=device
-        )
+        actions = torch.tensor(actions, dtype=torch.long).unsqueeze(1).to(device)
 
-        rewards = torch.tensor(
-            rewards, dtype=torch.float32, device=device
-        )
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
 
-        terminated = torch.tensor(
-            terminated, dtype=torch.float32, device=device
-        )
+        #Convert Terminated booleans to 0s and 1s for target_q calculation
+        terminated = torch.tensor(terminated, dtype=torch.float32).to(device)
 
-        # 4. Get Q-values for the actions actually taken
-        predicted_q = self.action_nn(states)
+        # Takes the q values predicted and index based on the action actually taken. Then remove extra dimension from action 
+        predicted_y = self.action_nn(states)
+        predicted_y = predicted_y.gather(1, actions).squeeze(1) 
 
-        predicted_q = predicted_q.gather(
-            1, actions.unsqueeze(1)
-        ).squeeze(1)
+        # predicted_y = torch.tensor([prediction[action] for prediction, action in zip(self.action_nn(states), actions)]).to(device)
+
+        
 
         # 5. Calculate target Q-values 
         with torch.no_grad():
@@ -132,35 +138,43 @@ class Agent:
 
             max_next_q = next_q.max(dim=1).values
 
-            target_q = rewards + self.gamma * (
-                1 - terminated
-            ) * max_next_q
+            target_y = rewards + self.gamma * (1 - terminated) * max_next_q
 
-        loss = self.action_nn.optimize_model(
-            predicted_q, target_q
-        )
+        loss = self.action_nn.optimize_model(predicted_y, target_y)
 
         return loss
 
 
     def update_target_nn(self):
         self.target_nn.load_state_dict(self.action_nn.state_dict())
+
+
+#HYPERPARAMETERS
+epsilon = 0.1
+gamma = 0.9
+C = 4
+memory_minibatch_size = 8
+episodes = 100 
                    
 
-agent = Agent(DQN(obs.size, env.action_space.n).to(device))
+agent = Agent(epsilon=epsilon, gamma=gamma, C=C, memory_minibatch_size=memory_minibatch_size)
 
+episode = 0
+step = 0
+episode_reward_sum = 0
 #TRAINING LOOP
-for step in range(1000):
+while episode < episodes:
     # action = env.action_space.sample()
     action = agent.select_action(agent.action_nn, obs)[0]
     
 
     next_obs, reward, terminated, truncated, info = env.step(action)
     # Store experience in replay memory
-    agent.replay_memory.append((obs, action, reward, next_obs, terminated, truncated))
+    agent.add_to_replay_memory((obs, action, reward, next_obs, terminated, truncated))
+    episode_reward_sum += reward
 
     loss = agent.training_step() #need to show loss per episode?
-    if step % 10 == 0:
+    if step % 100 == 0:
         print(f"Step: {step}, Current Loss: {loss}")
 
     obs = next_obs
@@ -169,7 +183,12 @@ for step in range(1000):
         agent.update_target_nn()
 
     if terminated or truncated:
+        episode += 1
+        print(f"Episode: {episode}, Total Reward: {episode_reward_sum} Replay Memory Size: {len(agent.replay_memory)}")
+        episode_reward_sum = 0
+
         obs, info = env.reset()
+    step += 1
 
 env.close()
 
