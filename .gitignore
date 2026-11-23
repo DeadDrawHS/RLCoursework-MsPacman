@@ -1,1 +1,8 @@
-__pycache__
+# Ignore Training videos
+
+**/Evidence/Videos/
+
+# Python junk
+__pycache__/
+*.pyc
+.venv/
