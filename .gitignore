@@ -1,8 +1,13 @@
-# Ignore Training videos
-
-**/Evidence/Videos/
-
-# Python junk
-__pycache__/
-*.pyc
+# Ignore virtual environment
 .venv/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore all generated training videos
+DQN/Evidence/Videos/
+*.mp4
+
+# OS generated files
+.DS_Store
