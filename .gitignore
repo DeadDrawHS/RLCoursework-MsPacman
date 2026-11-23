@@ -1,0 +1,8 @@
+# Training evidence – kept locally, not pushed
+
+**/Evidence/Videos/
+
+# Python junk
+__pycache__/
+*.pyc
+.venv/
