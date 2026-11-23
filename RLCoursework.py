@@ -44,8 +44,7 @@ class DQN(nn.Module):
         self.loss = nn.HuberLoss()
         self.optimizer = optim.AdamW(self.parameters(), lr=self.lr, amsgrad=True)
 
-    # Called with either one element to determine next action, or a batch
-    # during optimization. Returns tensor([[left0exp,right0exp]...]).
+   
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
